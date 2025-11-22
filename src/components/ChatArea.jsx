@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Send, Loader, User, Bot, AlertCircle, Check, X } from 'lucide-react';
 import useChatStore from '../store/useChatStore';
 
@@ -6,84 +6,157 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000
 
 // Simple Markdown Component
 const MarkdownRenderer = ({ content }) => {
-  const renderMarkdown = (text) => {
-    // Handle tables
-    if (text.includes('|')) {
-      const lines = text.split('\n');
-      const tableLines = [];
-      let inTable = false;
-      let otherContent = [];
-      
-      lines.forEach(line => {
-        if (line.trim().startsWith('|')) {
-          inTable = true;
-          tableLines.push(line);
-        } else if (inTable && line.trim() === '') {
-          inTable = false;
-        } else if (!inTable) {
-          otherContent.push(line);
-        }
-      });
-      
-      if (tableLines.length > 0) {
-        const headers = tableLines[0].split('|').filter(h => h.trim()).map(h => h.trim());
-        const rows = tableLines.slice(2).map(row => 
-          row.split('|').filter(cell => cell.trim()).map(cell => cell.trim())
-        );
-        
-        return (
-          <div>
-            {otherContent.length > 0 && <div className="mb-4 whitespace-pre-wrap">{otherContent.join('\n')}</div>}
-            <div className="overflow-x-auto">
-              <table className="min-w-full border border-gray-300 text-sm">
-                <thead className="bg-gray-100">
-                  <tr>
-                    {headers.map((header, idx) => (
-                      <th key={idx} className="border border-gray-300 px-4 py-2 text-left font-semibold">
-                        {header}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row, idx) => (
-                    <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                      {row.map((cell, cellIdx) => (
-                        <td key={cellIdx} className="border border-gray-300 px-4 py-2">
-                          {cell}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        );
-      }
-    }
+  // Parse markdown manually for better control
+  const parseMarkdown = (text) => {
+    let html = text;
     
-    // Handle lists
-    const parts = text.split('\n').map((line, idx) => {
-      if (line.match(/^[-*]\s/)) {
-        return <li key={idx} className="ml-4">{line.replace(/^[-*]\s/, '')}</li>;
-      }
-      if (line.match(/^\d+\.\s/)) {
-        return <li key={idx} className="ml-4">{line.replace(/^\d+\.\s/, '')}</li>;
-      }
-      if (line.startsWith('**') && line.endsWith('**')) {
-        return <strong key={idx}>{line.slice(2, -2)}</strong>;
-      }
-      return <div key={idx}>{line}</div>;
+    // Code blocks with language
+    html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
+      return `<pre><code class="language-${lang || 'text'}">${escapeHtml(code.trim())}</code></pre>`;
     });
     
-    return <div className="space-y-1">{parts}</div>;
+    // Inline code
+    html = html.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
+    
+    // Bold
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
+    
+    // Italic
+    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    html = html.replace(/_(.+?)_/g, '<em>$1</em>');
+    
+    // Strikethrough
+    html = html.replace(/~~(.+?)~~/g, '<del>$1</del>');
+    
+    // Headers
+    html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+    
+    // Links
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    
+    // Images
+    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" />');
+    
+    // Blockquotes
+    html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+    
+    // Horizontal rules
+    html = html.replace(/^---$/gm, '<hr />');
+    html = html.replace(/^\*\*\*$/gm, '<hr />');
+    
+    // Unordered lists
+    html = html.replace(/^\* (.+)$/gm, '<li>$1</li>');
+    html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+    html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
+    
+    // Ordered lists
+    html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+    
+    // Line breaks
+    html = html.replace(/\n\n/g, '</p><p>');
+    html = html.replace(/\n/g, '<br />');
+    
+    return html;
   };
   
-  return <div className="text-gray-800">{renderMarkdown(content)}</div>;
+  const escapeHtml = (text) => {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  };
+  
+  // Check if content has tables
+  const hasTable = content.includes('|') && content.split('\n').filter(line => line.includes('|')).length > 1;
+  
+  if (hasTable) {
+    const lines = content.split('\n');
+    let tableLines = [];
+    let otherLines = [];
+    let inTable = false;
+    
+    lines.forEach((line, idx) => {
+      if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
+        inTable = true;
+        tableLines.push(line);
+      } else if (inTable && line.trim() === '') {
+        inTable = false;
+      } else if (!inTable) {
+        otherLines.push(line);
+      } else if (inTable) {
+        tableLines.push(line);
+      }
+    });
+    
+    // Parse table
+    if (tableLines.length > 2) {
+      const headers = tableLines[0]
+        .split('|')
+        .filter(h => h.trim())
+        .map(h => h.trim());
+      
+      const rows = tableLines.slice(2).map(row =>
+        row.split('|')
+          .filter(cell => cell.trim())
+          .map(cell => cell.trim())
+      );
+      
+      return (
+        <div className="space-y-4">
+          {otherLines.length > 0 && (
+            <div 
+              className="markdown-content"
+              dangerouslySetInnerHTML={{ __html: parseMarkdown(otherLines.join('\n')) }}
+            />
+          )}
+          <div className="overflow-x-auto">
+            <table className="min-w-full border-collapse border border-gray-300 text-sm">
+              <thead className="bg-gray-100">
+                <tr>
+                  {headers.map((header, idx) => (
+                    <th
+                      key={idx}
+                      className="border border-gray-300 px-4 py-2 text-left font-semibold text-gray-700"
+                    >
+                      {header}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, idx) => (
+                  <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                    {row.map((cell, cellIdx) => (
+                      <td key={cellIdx} className="border border-gray-300 px-4 py-2 text-gray-800">
+                        {cell}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      );
+    }
+  }
+  
+  // Render regular markdown
+  return (
+    <div 
+      className="markdown-content"
+      dangerouslySetInnerHTML={{ __html: parseMarkdown(content) }}
+    />
+  );
 };
+
 const ChatArea = () => {
   const [inputMessage, setInputMessage] = useState('');
+  const messagesEndRef = useRef(null);
+  const chatContainerRef = useRef(null);
+  
   const { 
     messages, 
     currentUser, 
@@ -93,6 +166,13 @@ const ChatArea = () => {
     addMessage, 
     setLoading 
   } = useChatStore();
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [messages, isLoading]);
 
   const handleSendMessage = async () => {
     if (!inputMessage.trim() || !currentUser || !currentModel) return;
@@ -165,7 +245,7 @@ const ChatArea = () => {
   return (
     <div className="flex-1 flex flex-col bg-gray-50">
       {/* Chat Messages */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+      <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-6 space-y-4">
         {messages.length === 0 ? (
           <div className="h-full flex items-center justify-center">
             <div className="text-center text-gray-400">
@@ -175,51 +255,55 @@ const ChatArea = () => {
             </div>
           </div>
         ) : (
-          messages.map((msg, idx) => (
-            <div
-              key={idx}
-              className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
+          <>
+            {messages.map((msg, idx) => (
               <div
-                className={`max-w-2xl rounded-lg p-4 ${
-                  msg.role === 'user'
-                    ? 'bg-blue-600 text-white'
-                    : msg.isError
-                    ? 'bg-red-50 border border-red-200'
-                    : 'bg-white border border-gray-200'
-                }`}
+                key={idx}
+                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
               >
-                <div className="flex items-start gap-3">
-                  {msg.role === 'assistant' && (
-                    <Bot className={`w-5 h-5 mt-1 flex-shrink-0 ${msg.isError ? 'text-red-500' : 'text-gray-600'}`} />
-                  )}
-                  {msg.role === 'user' && (
-                    <User className="w-5 h-5 mt-1 flex-shrink-0" />
-                  )}
-                  <div className="flex-1">
-                    {msg.role === 'assistant' && !msg.isError ? (
-                      <MarkdownRenderer content={msg.content} />
-                    ) : (
-                      <p className={msg.isError ? 'text-red-700' : ''}>{msg.content}</p>
+                <div
+                  className={`max-w-2xl rounded-lg p-4 ${
+                    msg.role === 'user'
+                      ? 'bg-blue-600 text-white'
+                      : msg.isError
+                      ? 'bg-red-50 border border-red-200'
+                      : 'bg-white border border-gray-200'
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    {msg.role === 'assistant' && (
+                      <Bot className={`w-5 h-5 mt-1 flex-shrink-0 ${msg.isError ? 'text-red-500' : 'text-gray-600'}`} />
                     )}
-                    {msg.tool_used && (
-                      <div className="mt-2 text-xs text-gray-500 flex items-center gap-1">
-                        <AlertCircle className="w-3 h-3" />
-                        Tool used: <span className="font-mono">{msg.tool_used}</span>
-                      </div>
+                    {msg.role === 'user' && (
+                      <User className="w-5 h-5 mt-1 flex-shrink-0" />
                     )}
+                    <div className="flex-1">
+                      {msg.role === 'assistant' && !msg.isError ? (
+                        <MarkdownRenderer content={msg.content} />
+                      ) : (
+                        <p className={msg.isError ? 'text-red-700' : ''}>{msg.content}</p>
+                      )}
+                      {msg.tool_used && (
+                        <div className="mt-2 text-xs text-gray-500 flex items-center gap-1">
+                          <AlertCircle className="w-3 h-3" />
+                          Tool used: <span className="font-mono">{msg.tool_used}</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-          ))
-        )}
-        {isLoading && (
-          <div className="flex justify-start">
-            <div className="bg-white border border-gray-200 rounded-lg p-4">
-              <Loader className="w-5 h-5 text-blue-600 animate-spin" />
-            </div>
-          </div>
+            ))}
+            {isLoading && (
+              <div className="flex justify-start">
+                <div className="bg-white border border-gray-200 rounded-lg p-4">
+                  <Loader className="w-5 h-5 text-blue-600 animate-spin" />
+                </div>
+              </div>
+            )}
+            {/* Invisible element to scroll to */}
+            <div ref={messagesEndRef} />
+          </>
         )}
       </div>
 
